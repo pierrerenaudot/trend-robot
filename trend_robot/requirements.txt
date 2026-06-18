@@ -1,0 +1,16 @@
+# TSMOM research robot — runtime & dev dependencies (Python 3.11+)
+# Pinned to the versions validated in this project.
+pandas==3.0.3
+numpy==2.4.6
+scipy==1.17.1
+matplotlib==3.11.0
+yfinance==1.4.1
+PyYAML==6.0.3
+pyarrow==24.0.0
+
+# Tests
+pytest==9.1.0
+
+# Paper-trading broker (optional — only needed to submit to Alpaca paper;
+# the --dry-run preview works without it).
+alpaca-py==0.43.4

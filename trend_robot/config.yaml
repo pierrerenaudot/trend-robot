@@ -1,0 +1,49 @@
+# =====================================================================
+# TSMOM Research Robot — central configuration (single source of truth)
+# NO market values are hard-coded anywhere in the code; everything that
+# parameterizes the strategy/backtest/validation lives here and is loaded
+# into the typed `Config` dataclass (trend_robot/config.py).
+# =====================================================================
+
+# --- Capital ---------------------------------------------------------
+initial_capital: 2000
+
+# --- Universe & strategy direction -----------------------------------
+universe: [SPY, EFA, EEM, TLT, IEF, GLD, DBC]
+direction: long_short          # {long_short, long_only}
+
+# --- Rebalancing cadence ---------------------------------------------
+rebalance: weekly              # {daily, weekly, monthly}
+
+# --- TSMOM signal ----------------------------------------------------
+lookbacks: [21, 63, 126, 252]  # days ~ 1/3/6/12 months, averaged
+
+# --- Volatility estimation & targeting -------------------------------
+vol_window: 60                 # days (EWMA com ~ 60 recommended)
+asset_vol_target: 0.10         # 10% annualized, per asset (pre-aggregation)
+portfolio_vol_target: 0.10     # 10% annualized, portfolio level
+
+# --- Leverage / sizing -----------------------------------------------
+max_gross_leverage: 2.0
+kelly_fraction: 1.0
+
+# --- Costs -----------------------------------------------------------
+cost_bps_per_side: 2           # basis points charged per side on |delta notional|
+cost_stress_levels: [5, 10]    # sensitivity replays (bps per side)
+
+# --- Annualization ---------------------------------------------------
+periods_per_year: 252
+
+# --- Validation: locked train/test -----------------------------------
+train_test_ratio: 0.70         # last 30% locked as out-of-sample test
+
+# --- Validation: walk-forward ----------------------------------------
+wf_train_years: 5
+wf_test_years: 1
+wf_step_years: 1
+
+# --- Validation: purged CV + embargo ---------------------------------
+cv_embargo: 0.01               # 1% of samples embargoed after each test fold
+
+# --- Reproducibility -------------------------------------------------
+seed: 42
