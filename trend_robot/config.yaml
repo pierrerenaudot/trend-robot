@@ -10,10 +10,10 @@ initial_capital: 2000
 
 # --- Universe & strategy direction -----------------------------------
 universe: [SPY, EFA, EEM, TLT, IEF, GLD, DBC]
-direction: long_short          # {long_short, long_only}
+direction: long_only           # {long_short, long_only}  (adopted: long_short short-legs drove walk-forward instability; see README/investigation)
 
 # --- Rebalancing cadence ---------------------------------------------
-rebalance: weekly              # {daily, weekly, monthly}
+rebalance: monthly             # {daily, weekly, monthly}  (adopted: lower turnover, more stable walk-forward)
 
 # --- TSMOM signal ----------------------------------------------------
 lookbacks: [21, 63, 126, 252]  # days ~ 1/3/6/12 months, averaged

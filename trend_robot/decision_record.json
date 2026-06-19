@@ -1,0 +1,34 @@
+{
+  "config_fingerprint": {
+    "asset_vol_target": 0.1,
+    "cost_bps_per_side": 2.0,
+    "direction": "long_only",
+    "kelly_fraction": 1.0,
+    "lookbacks": [
+      21,
+      63,
+      126,
+      252
+    ],
+    "max_gross_leverage": 2.0,
+    "periods_per_year": 252,
+    "portfolio_vol_target": 0.1,
+    "rebalance": "monthly",
+    "seed": 42,
+    "universe": [
+      "SPY",
+      "EFA",
+      "EEM",
+      "TLT",
+      "IEF",
+      "GLD",
+      "DBC"
+    ],
+    "vol_window": 60
+  },
+  "config_hash": "8694cdcb6d25463fe2f735662df549d91ba02234e65979be239a5b915160e530",
+  "created_at": "2026-06-19T09:47:52+00:00",
+  "decision_date": "2026-06-19",
+  "n_trials_spent": 6,
+  "notes": "Pre-registration of the long_only/monthly TSMOM variant. This variant was SELECTED via test-inclusive exploration (baseline + the 2x2 direction x cadence grid + the candidate read), so the section-6.5 RETAIN on the locked test set is NOT a clean out-of-sample verdict: every past window was peeked at during selection. The ONLY genuinely pristine out-of-sample evidence is data dated strictly after this decision_date (2026-06-19); that forward hold-out is accrued by the paper-trading track. n_trials_spent=6 counts the configurations honestly explored before this freeze."
+}

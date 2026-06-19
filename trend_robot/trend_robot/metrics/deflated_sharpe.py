@@ -27,9 +27,18 @@ observations, ``gamma3`` the skew, ``gamma4`` the kurtosis (non-excess), and
                                + euler_gamma * Phi^{-1}(1 - 1/(N*e)) ].
 
 Here ``N = n_trials``, ``Var_trials`` is the cross-trial variance of the Sharpe
-estimates (defaulted to ``1`` -- the standardized convention -- when not
-supplied), and ``e`` is Euler's number. ``SR0`` increases with ``N``, so for a
-fixed observed Sharpe the DSR is monotonically *decreasing* in ``n_trials``.
+estimates and ``e`` is Euler's number. When the caller does not supply
+``Var_trials``, :func:`deflated_sharpe_ratio` estimates it as the per-observation
+sampling variance of the Sharpe estimator, ``var_term / (T - 1)`` (Mertens/Lo),
+so ``SR0`` lands on the same per-bar scale as the observed Sharpe. ``SR0``
+increases with ``N``, so for a fixed observed Sharpe the DSR is monotonically
+*decreasing* in ``n_trials``.
+
+NOTE: ``SR0`` must be compared to a *per-observation* Sharpe. Scaling it by
+``var_trials = 1.0`` (a plausible-looking default) makes ``SR0`` ~1.2 -- orders
+of magnitude larger than a typical per-bar Sharpe (~0.05) -- which floors the DSR
+at exactly 0 for any ``n_trials > 1``. The estimated per-bar variance above
+avoids this.
 
 All Sharpe inputs/benchmarks are in *per-observation* (non-annualized) units,
 which is the convention of the paper; the caller is responsible for passing a
@@ -135,7 +144,7 @@ def deflated_sharpe_ratio(
     n_trials: int,
     skew: float,
     kurtosis: float,
-    var_trials: float = 1.0,
+    var_trials: float | None = None,
 ) -> float:
     """Deflated Sharpe Ratio (Bailey & Lopez de Prado, 2014).
 
@@ -173,7 +182,11 @@ def deflated_sharpe_ratio(
         Kurtosis of the returns (non-excess; a normal distribution has ``3``).
         Heavier tails (``> 3``) lower the DSR.
     var_trials:
-        Cross-trial variance of the Sharpe estimates (defaults to ``1.0``).
+        Cross-trial variance of the (per-observation) Sharpe estimates. When
+        ``None`` (default) it is estimated as ``var_term / (T - 1)`` so the
+        multiple-testing hurdle ``SR0`` is on the same per-bar scale as the
+        observed Sharpe. Pass an explicit value only if you measured it across
+        real trials.
 
     Returns
     -------
@@ -194,7 +207,7 @@ def deflated_sharpe_ratio(
     """
     if n_trials < 1:
         raise ValueError(f"'n_trials' must be >= 1, got {n_trials}.")
-    if var_trials < 0.0:
+    if var_trials is not None and var_trials < 0.0:
         raise ValueError(f"'var_trials' must be non-negative, got {var_trials}.")
 
     r = pd.Series(returns, dtype="float64").replace([np.inf, -np.inf], np.nan).dropna()
@@ -206,14 +219,24 @@ def deflated_sharpe_ratio(
     if not np.isfinite(sr):
         return float("nan")
 
-    sr0 = expected_max_sharpe(n_trials, var_trials=var_trials)
-
     # Mertens/Lo corrected variance of the Sharpe estimator (the term under the
     # square root). A non-positive term means the correction is ill-defined for
     # the given moments and Sharpe; report nan rather than a complex result.
     var_term = 1.0 - skew * sr + (kurtosis - 1.0) / 4.0 * (sr**2)
     if var_term <= 0.0 or not np.isfinite(var_term):
         return float("nan")
+
+    # The expected-maximum hurdle SR0 must be on the SAME (per-observation) scale
+    # as ``sr``. When the caller does not supply the cross-trial Sharpe variance,
+    # estimate it by the per-observation sampling variance of the Sharpe
+    # estimator, ``var_term / (T - 1)`` (Mertens/Lo) -- which under the
+    # multiple-testing null approximates that cross-trial variance. Using the old
+    # ``1.0`` default would put SR0 (~1.2) on a wildly different scale from a
+    # per-bar Sharpe (~0.05) and floor the DSR at 0 for any n_trials > 1.
+    if var_trials is None:
+        var_trials = var_term / (n_obs - 1)
+
+    sr0 = expected_max_sharpe(n_trials, var_trials=var_trials)
 
     denom = math.sqrt(var_term)
     z = (sr - sr0) * math.sqrt(n_obs - 1) / denom

@@ -1,7 +1,8 @@
 """Paper-trading DRY-RUN entry point for the TSMOM robot (milestone 1).
 
 ENGINEERING DRESS-REHEARSAL -- NOT A DEPLOY SIGNAL. The strategy spec defers
-live/paper trading (section 10) and the current section-6.5 verdict is REJECT.
+live/paper trading (section 10); deploy only after a human-approved section-6.5
+RETAIN (see run_validation.py). The dry-run is plumbing, independent of any verdict.
 This script COMPUTES and DISPLAYS today's rebalance orders for the chosen broker
 (Alpaca paper) WITHOUT sending anything. It is structured so that wiring the real
 Alpaca API later is just a plug-in (swap :class:`LocalPaperBroker` for
@@ -188,8 +189,8 @@ def _print_preview(
         "signal."
     )
     print(
-        "        Spec section 10 defers live/paper trading; section-6.5 verdict "
-        "is REJECT."
+        "        Spec section 10 defers live/paper trading; deploy only after a "
+        "human-approved §6.5 RETAIN (run_validation.py)."
     )
     if dry_run:
         print("        No orders were submitted to any broker.")

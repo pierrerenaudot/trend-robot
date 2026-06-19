@@ -198,6 +198,27 @@ def test_dsr_decreases_with_n_trials() -> None:
     assert vals[0] > vals[-1]
 
 
+def test_dsr_no_collapse_under_multiple_testing() -> None:
+    """Regression: the multiple-testing hurdle stays on the per-bar Sharpe scale.
+
+    Guards the ``var_trials`` mis-scaling bug. With ``var_trials`` defaulted to
+    ``1.0`` the expected-max hurdle SR0 (~1.2) dwarfs a per-bar Sharpe (~0.1) and
+    floors the DSR at exactly 0 for any ``n_trials > 1``. The auto-estimated
+    per-observation variance must instead make the DSR decline *gradually*.
+    """
+    rets = _normal_returns()  # per-bar Sharpe ~0.1, T=1000
+    d1 = deflated_sharpe_ratio(rets, n_trials=1, skew=0.0, kurtosis=3.0)
+    d2 = deflated_sharpe_ratio(rets, n_trials=2, skew=0.0, kurtosis=3.0)
+    d10 = deflated_sharpe_ratio(rets, n_trials=10, skew=0.0, kurtosis=3.0)
+    # Does not collapse: 2 and 10 trials stay meaningfully positive.
+    assert d2 > 0.5
+    assert d10 > 0.3
+    # Declines gradually, not off a cliff (the bug dropped ~0.9 in a single step).
+    assert d1 - d2 < 0.2
+    # Still monotonically decreasing.
+    assert d1 > d2 > d10
+
+
 def test_dsr_in_unit_interval() -> None:
     """DSR is a probability in [0, 1]."""
     rets = _normal_returns()

@@ -4,7 +4,7 @@ Robot de **recherche et validation** d'une stratégie *Time-Series Momentum* (TS
 
 > ⚠️ **Avertissement — ceci n'est PAS un conseil financier ni un système de trading prêt à déployer.**
 > Le périmètre est *recherche + validation*. L'exécution réelle / le trading live sont volontairement **hors périmètre**.
-> Sur les données testées, le **verdict de validation (§6.5) est actuellement `REJECT`** : la stratégie ne satisfait pas le critère de robustesse et **ne doit pas être déployée**. Le mode *paper-trading* fourni est un **`--dry-run` de répétition d'ingénierie**, pas un signal de déploiement.
+> Sur données réelles, la variante **`long_only` / `monthly`** obtient un §6.5 `RETAIN` **limite** (Deflated Sharpe 0,63 pour un seuil 0,60, à `n_trials=5` ; bascule en `REJECT` si l'on compte plus de configs explorées). ⚠️ Ce verdict n'est **pas** une validation propre : le choix de la variante a été informé par une exploration incluant le jeu de test — une confirmation rigoureuse exigerait une période de hold-out fraîche. **Ce n'est donc pas un feu vert de déploiement** : le mode *paper-trading* reste un **`--dry-run` de répétition d'ingénierie**, et la décision finale relève du jugement humain (§11). *(La variante `long_short` d'origine était `REJECT` : ses jambes short sur actions déstabilisaient le walk-forward.)*
 
 ---
 
@@ -145,8 +145,8 @@ Tous les paramètres vivent dans [`config.yaml`](config.yaml) et sont chargés/v
 |---|---|---|
 | `initial_capital` | `2000` | Capital de départ (échelle de recherche). |
 | `universe` | `[SPY, EFA, EEM, TLT, IEF, GLD, DBC]` | Panier multi-actifs (actions, obligations, or, matières premières). |
-| `direction` | `long_short` | `long_short` (alpha de crise) ou `long_only`. |
-| `rebalance` | `weekly` | `daily` / `weekly` / `monthly`. |
+| `direction` | `long_only` | `long_only` (adopté — plus stable) ou `long_short` (alpha de crise théorique). |
+| `rebalance` | `monthly` | `daily` / `weekly` / `monthly` (adopté — turnover plus bas, walk-forward plus stable). |
 | `lookbacks` | `[21, 63, 126, 252]` | Horizons TSMOM (1/3/6/12 mois), moyennés. |
 | `vol_window` | `60` | Fenêtre d'estimation de la volatilité ex-ante. |
 | `asset_vol_target` | `0.10` | Cible de vol annualisée par actif. |
