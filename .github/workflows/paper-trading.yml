@@ -1,0 +1,101 @@
+name: TSMOM paper trading (Alpaca)
+
+# Serverless monthly paper-trading runner.
+# The strategy rebalances MONTHLY, but we fire on every weekday: run_live.py's
+# per-period idempotence guard ensures AT MOST ONE submission per month (the
+# extra runs are harmless health-checks that just print "already submitted").
+# State (the idempotence marker + price cache) is persisted between runs via a
+# rolling actions/cache, so the once-a-month guard survives ephemeral runners.
+#
+# SAFETY: this targets the Alpaca PAPER endpoint only (paper=True in the code).
+# Nothing runs until you (a) add the two repo secrets and (b) enable Actions.
+
+on:
+  schedule:
+    # 13:30 UTC on weekdays (~before the US open); orders are DAY orders.
+    # GitHub may delay scheduled runs under load — fine for a monthly cadence.
+    - cron: "30 13 * * 1-5"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Dry-run (preview only, NO orders sent). Uncheck to submit to Alpaca paper."
+        type: boolean
+        default: true
+
+# Scheduled workflows only run on the default branch (main).
+permissions:
+  contents: read
+
+concurrency:
+  group: tsmom-paper-trading
+  cancel-in-progress: false
+
+jobs:
+  paper:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: trend_robot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: trend_robot/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      # --- Restore persisted state (idempotence marker + price cache). -------
+      # Rolling-cache pattern: the exact run-id key never pre-exists, so a fresh
+      # cache is saved every run; restore-keys pulls the most recent prior state.
+      - name: Restore run state
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            trend_robot/live_state
+            trend_robot/.cache
+          key: tsmom-state-${{ github.run_id }}
+          restore-keys: |
+            tsmom-state-
+
+      # --- Run. Manual dry-run needs no credentials; the scheduled/real run
+      #     submits to Alpaca paper and is gated by the in-code safety guards. --
+      - name: Run paper trading
+        env:
+          APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
+          APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          if [ "$DRY_RUN" = "true" ]; then
+            echo "::notice::Dry-run preview (no orders will be sent)."
+            python run_live.py --dry-run --live --log-level INFO
+          else
+            echo "::notice::LIVE paper submit (Alpaca paper; idempotent: 1 trade/month)."
+            python run_live.py --no-dry-run --broker alpaca --live --log-level INFO
+          fi
+
+      # --- Persist state AFTER the run (even if a later step fails). ----------
+      - name: Save run state
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            trend_robot/live_state
+            trend_robot/.cache
+          key: tsmom-state-${{ github.run_id }}
+
+      # --- Keep the run-state log as a downloadable artifact for auditing. ----
+      - name: Upload run-state artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-state-${{ github.run_id }}
+          path: trend_robot/live_state
+          if-no-files-found: ignore
+          retention-days: 90

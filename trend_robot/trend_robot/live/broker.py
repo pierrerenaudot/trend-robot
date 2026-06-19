@@ -25,9 +25,12 @@ and the live account); nothing is hard-coded here.
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
-from typing import Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
+
+_LOGGER = logging.getLogger("trend_robot.live.broker")
 
 __all__ = [
     "AccountSnapshot",
@@ -296,10 +299,17 @@ class AlpacaBroker:
     ----------
     api_key, secret_key:
         Optional explicit credentials. When omitted they are read from the
-        environment; if still absent, construction raises.
+        environment; if still absent, construction raises -- UNLESS ``client``
+        is supplied (see below).
     paper:
         Use the paper endpoint (default ``True``). The dry-run milestone only
         ever targets paper.
+    client:
+        Optional pre-built trading client to use *directly*. When provided, the
+        env-credential check and the real ``TradingClient`` construction are
+        BOTH skipped, so tests can inject a mock client with no network and no
+        credentials. When ``None`` (the production default) the current
+        env-key + paper ``TradingClient`` behaviour is unchanged.
     """
 
     def __init__(
@@ -308,7 +318,15 @@ class AlpacaBroker:
         secret_key: str | None = None,
         *,
         paper: bool = True,
+        client: Any | None = None,
     ) -> None:
+        self._paper = bool(paper)
+
+        # Injected client (tests): use it directly, skip creds + real client.
+        if client is not None:
+            self._client = client
+            return
+
         key = api_key or _first_env(_KEY_ENV_VARS)
         secret = secret_key or _first_env(_SECRET_ENV_VARS)
         if not key or not secret:
@@ -323,7 +341,6 @@ class AlpacaBroker:
         # Lazy import: keeps this module import-clean without alpaca installed.
         from alpaca.trading.client import TradingClient
 
-        self._paper = bool(paper)
         self._client = TradingClient(key, secret, paper=self._paper)
 
     def get_account(self) -> AccountSnapshot:
@@ -381,3 +398,81 @@ class AlpacaBroker:
             status=str(getattr(order, "status", "submitted")),
             broker_order_id=str(getattr(order, "id", None)),
         )
+
+    def is_market_open(self) -> bool:
+        """Return whether the U.S. equity market is currently open.
+
+        Queries the Alpaca clock (``client.get_clock().is_open``). Clients that
+        do not expose ``get_clock`` (e.g. a minimal mock or local stand-in) are
+        tolerated: this returns ``True`` with a logged note so neither tests nor
+        the local path break. The runner uses this only to *warn* (DAY orders
+        queue for the next session when closed); it never hard-blocks.
+
+        Returns
+        -------
+        bool
+            ``True`` if the market is open (or the clock is unavailable),
+            ``False`` if the clock reports it closed.
+        """
+        get_clock = getattr(self._client, "get_clock", None)
+        if not callable(get_clock):
+            _LOGGER.info(
+                "Broker client has no get_clock(); assuming market open "
+                "(cannot verify the trading clock)."
+            )
+            return True
+        clock = get_clock()
+        return bool(getattr(clock, "is_open", True))
+
+    def recent_orders(self, limit: int = 20) -> list[OrderResult]:
+        """Return the most recent orders as :class:`OrderResult` (best-effort).
+
+        Maps the client's recent orders for a quick audit trail. This is purely
+        informational and must never break the run: any unsupported client, or
+        any error while fetching/mapping, yields an empty list (logged).
+
+        Parameters
+        ----------
+        limit:
+            Maximum number of recent orders to request.
+
+        Returns
+        -------
+        list[OrderResult]
+            Recent orders mapped to :class:`OrderResult`, or ``[]`` when the
+            client cannot provide them.
+        """
+        get_orders = getattr(self._client, "get_orders", None)
+        if not callable(get_orders):
+            return []
+        try:
+            try:
+                # Preferred path: a typed GetOrdersRequest filter with a limit.
+                from alpaca.trading.requests import GetOrdersRequest
+
+                orders = get_orders(filter=GetOrdersRequest(limit=int(limit)))
+            except Exception:  # noqa: BLE001 - fall back for mocks/old clients
+                orders = get_orders()
+        except Exception as exc:  # noqa: BLE001 - audit is best-effort only
+            _LOGGER.warning("Could not fetch recent orders: %s", exc)
+            return []
+
+        results: list[OrderResult] = []
+        for order in list(orders or [])[: int(limit)]:
+            side = str(getattr(order, "side", "")).lower()
+            side = "buy" if "buy" in side else ("sell" if "sell" in side else side)
+            qty_raw = getattr(order, "qty", None)
+            try:
+                qty = float(qty_raw) if qty_raw is not None else 0.0
+            except (TypeError, ValueError):
+                qty = 0.0
+            results.append(
+                OrderResult(
+                    symbol=str(getattr(order, "symbol", "")),
+                    side=side,
+                    qty=qty,
+                    status=str(getattr(order, "status", "")),
+                    broker_order_id=str(getattr(order, "id", None)),
+                )
+            )
+        return results
