@@ -1,0 +1,41 @@
+{
+  "config_fingerprint": {
+    "asset_vol_target": 0.1,
+    "cost_bps_per_side": 2.0,
+    "direction": "long_only",
+    "kelly_fraction": 1.0,
+    "lookbacks": [
+      21,
+      63,
+      126,
+      252
+    ],
+    "max_gross_leverage": 2.0,
+    "periods_per_year": 252,
+    "portfolio_vol_target": 0.1,
+    "rebalance": "monthly",
+    "seed": 42,
+    "universe": [
+      "SPY",
+      "EFA",
+      "EEM",
+      "TLT",
+      "IEF",
+      "GLD",
+      "DBC",
+      "IWM",
+      "VGK",
+      "LQD",
+      "HYG",
+      "USO",
+      "VNQ",
+      "UUP"
+    ],
+    "vol_window": 60
+  },
+  "config_hash": "65791290a6be1f8ae9a02facdae4c6ac4fb71502d5f55ca970f4adc4e4525e33",
+  "created_at": "2026-06-22T14:11:44+00:00",
+  "decision_date": "2026-06-22",
+  "n_trials_spent": 7,
+  "notes": "Broad-universe TSMOM variant (14 assets), pre-registered as a SEPARATE forward track parallel to the primary 7-asset long_only/monthly decision. Single theory-motivated breadth expansion (not data-mined). Only bars dated strictly after decision_date are pristine OOS; judged via run_holdout.py --config config_broad.yaml --decision decision_record_broad.json. n_trials_spent=7 = the 6 configs explored for the primary variant + this universe hypothesis."
+}
