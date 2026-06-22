@@ -36,6 +36,38 @@ from trend_robot.live.target import compute_target_book
 # ---------------------------------------------------------------------------
 # executor math
 # ---------------------------------------------------------------------------
+def test_prices_asof_trims_trailing_all_nan_bar(cfg: Config, monkeypatch) -> None:
+    """A phantom trailing all-NaN bar (e.g. today's unpublished close) is trimmed
+    while interior NaN gaps are preserved -- so the live target is not zeroed out
+    into a spurious flat book. Regression for the trailing-NaN bug."""
+    idx = pd.bdate_range("2024-01-01", periods=5)
+    cols = ["SPY", "TLT"]
+    df = pd.DataFrame(
+        [
+            [100.0, 50.0],
+            [101.0, 50.5],
+            [float("nan"), float("nan")],  # interior gap -> must be PRESERVED
+            [102.0, 51.0],
+            [float("nan"), float("nan")],  # trailing phantom bar -> must be TRIMMED
+        ],
+        index=idx,
+        columns=cols,
+    )
+    import run_research
+
+    monkeypatch.setattr(
+        run_research, "_load_prices", lambda *a, **k: (df.copy(), "synthetic")
+    )
+    out, src = prices_asof(cfg, idx[-1].strftime("%Y-%m-%d"), "/tmp/nocache")
+    assert src == "synthetic"
+    # Trailing all-NaN row dropped -> panel ends at the last real bar.
+    assert out.index[-1] == idx[3]
+    assert not out.iloc[-1].isna().all()
+    # Interior gap preserved (not trimmed).
+    assert out.loc[idx[2]].isna().all()
+    assert len(out) == 4
+
+
 def test_plan_orders_basic_sides_qty_notional(cfg: Config) -> None:
     """From a flat book, target weights map to correct buy sides/qty/notional."""
     target_w = pd.Series({"AAA": 0.5, "BBB": -0.25})

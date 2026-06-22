@@ -74,6 +74,16 @@ def prices_asof(
     # Hard guarantee: never expose any row after asof, regardless of provider.
     asof_ts = pd.Timestamp(asof)
     prices = prices.loc[prices.index <= asof_ts]
+
+    # Trim any TRAILING all-NaN rows. A brand-new bar (e.g. today's date) is
+    # often present in the source with no published close yet; that phantom tail
+    # row would otherwise become the "latest" bar and yield an all-NaN signal
+    # row -> a spurious FLAT book (the live runner would wrongly go to cash).
+    # Interior NaN gaps (the explicit data-contract gaps) are preserved.
+    has_data = prices.notna().any(axis=1)
+    if has_data.any():
+        last_real = has_data[has_data].index[-1]
+        prices = prices.loc[:last_real]
     return prices, data_source
 
 
