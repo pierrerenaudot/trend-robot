@@ -1,0 +1,44 @@
+name: Tests
+
+# Continuous integration: run the pytest suite on every push to main and on
+# every pull request. The tests use synthetic data only — they never hit the
+# network (Yahoo may 429) and need no Alpaca credentials, so no secrets here.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel in-flight CI for the same ref when a newer push/PR-update arrives.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    # The full suite is ~7-11 min; allow headroom for cold caches.
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: trend_robot
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: trend_robot/requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q

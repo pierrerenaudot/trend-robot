@@ -113,6 +113,17 @@ def compute_full_history_weights(prices: pd.DataFrame, cfg: Config) -> pd.DataFr
     return target_weights(signals, returns, cfg)
 
 
+def _months_to_bars(months: int, periods_per_year: int) -> int:
+    """Convert a span in months to a whole number of trading bars.
+
+    Uses ``periods_per_year / 12`` bars per month and rounds to the nearest
+    whole bar. Mirrors the years->bars conversion in
+    :mod:`trend_robot.validation.splits` so a ``wf_*_months`` override lands on
+    the same bar grid the config-derived lengths use.
+    """
+    return int(round(months * periods_per_year / 12.0))
+
+
 def _forward_index(prices: pd.DataFrame, decision_date: str) -> pd.Index:
     """Index of bars dated strictly after ``decision_date`` (forward hold-out)."""
     cutoff = pd.Timestamp(decision_date)
@@ -167,6 +178,15 @@ class HoldoutReport:
     stability:
         Walk-forward stability over the hold-out slice if ``>= 2`` complete
         windows fit, else ``None`` ("not yet assessable").
+    wf_train_bars, wf_test_bars, wf_step_bars:
+        The walk-forward window lengths (in bars) actually used for the
+        hold-out stability leg. These equal the ``cfg.wf_*_years *
+        periods_per_year`` defaults unless overridden via the
+        ``wf_*_months`` arguments to :func:`evaluate_holdout` (short windows,
+        so the stability leg is assessable on a short forward slice).
+    wf_windows_overridden:
+        ``True`` iff at least one of the walk-forward window lengths was
+        overridden away from the ``cfg`` default by a ``wf_*_months`` argument.
     retain_preregistered:
         ``(dsr_preregistered > threshold) AND (stability is None or
         stability.is_stable)``.
@@ -189,6 +209,10 @@ class HoldoutReport:
     dsr_preregistered: float = float("nan")
     dsr_carried: float = float("nan")
     stability: WalkForwardStability | None = None
+    wf_train_bars: int = 0
+    wf_test_bars: int = 0
+    wf_step_bars: int = 0
+    wf_windows_overridden: bool = False
     retain_preregistered: bool = False
     retain_carried: bool = False
     n_trials_carried: int = 1
@@ -203,6 +227,9 @@ def evaluate_holdout(
     retrospective_months: int | None = None,
     min_bars: int | None = None,
     dsr_threshold: float = _DEFAULT_DSR_THRESHOLD,
+    wf_train_months: int | None = None,
+    wf_test_months: int | None = None,
+    wf_step_months: int | None = None,
 ) -> HoldoutReport:
     """Run the section-6.5 read on the post-decision (or retrospective) slice.
 
@@ -236,6 +263,15 @@ def evaluate_holdout(
         ``cfg.periods_per_year``.
     dsr_threshold:
         DSR above which the result is "clearly positive" (default ``0.60``).
+    wf_train_months, wf_test_months, wf_step_months:
+        Optional walk-forward window lengths in **months** used *only* for the
+        forward/retrospective walk-forward stability leg. Each non-``None``
+        value is converted to bars via ``periods_per_year / 12`` and overrides
+        the corresponding ``cfg.wf_*_years`` default. Leave all ``None``
+        (the default) to keep the config-driven 5y/1y/1y windows -- the spec
+        defaults for the locked-test section 6.5 are never touched. Short
+        windows (e.g. ``wf_train_months=6``, ``wf_test_months=3``) make the
+        stability leg assessable (``>= 2`` windows) on a short forward slice.
 
     Returns
     -------
@@ -255,6 +291,29 @@ def evaluate_holdout(
     if min_bars is None:
         min_bars = int(cfg.periods_per_year)
     min_bars = int(min_bars)
+
+    # --- Walk-forward window lengths for the stability leg. ----------------
+    # Default to the config-derived 5y/1y/1y bars; a non-None *_months argument
+    # overrides only that window (months -> bars), leaving cfg untouched.
+    ppy = int(cfg.periods_per_year)
+    wf_overridden = any(
+        m is not None for m in (wf_train_months, wf_test_months, wf_step_months)
+    )
+    wf_train_bars = (
+        _months_to_bars(wf_train_months, ppy)
+        if wf_train_months is not None
+        else int(round(cfg.wf_train_years * ppy))
+    )
+    wf_test_bars = (
+        _months_to_bars(wf_test_months, ppy)
+        if wf_test_months is not None
+        else int(round(cfg.wf_test_years * ppy))
+    )
+    wf_step_bars = (
+        _months_to_bars(wf_step_months, ppy)
+        if wf_step_months is not None
+        else int(round(cfg.wf_step_years * ppy))
+    )
 
     n_trials_carried = int(record.n_trials_spent)
 
@@ -288,6 +347,10 @@ def evaluate_holdout(
             dsr_preregistered=float("nan"),
             dsr_carried=float("nan"),
             stability=None,
+            wf_train_bars=wf_train_bars,
+            wf_test_bars=wf_test_bars,
+            wf_step_bars=wf_step_bars,
+            wf_windows_overridden=wf_overridden,
             retain_preregistered=False,
             retain_carried=False,
             n_trials_carried=n_trials_carried,
@@ -305,7 +368,19 @@ def evaluate_holdout(
     )
 
     # --- Walk-forward stability over the hold-out slice (>= 2 windows). ----
-    windows = walk_forward_splits(holdout_index, cfg)
+    # When window lengths were overridden (wf_*_months), pass them explicitly in
+    # bars; otherwise fall through to the config-driven defaults so the prior
+    # behaviour is reproduced exactly.
+    if wf_overridden:
+        windows = walk_forward_splits(
+            holdout_index,
+            cfg,
+            train_bars=wf_train_bars,
+            test_bars=wf_test_bars,
+            step_bars=wf_step_bars,
+        )
+    else:
+        windows = walk_forward_splits(holdout_index, cfg)
     if len(windows) >= 2:
         stability: WalkForwardStability | None = _walk_forward_stability(
             prices,
@@ -342,6 +417,10 @@ def evaluate_holdout(
         dsr_preregistered=dsr_pre,
         dsr_carried=dsr_carried,
         stability=stability,
+        wf_train_bars=wf_train_bars,
+        wf_test_bars=wf_test_bars,
+        wf_step_bars=wf_step_bars,
+        wf_windows_overridden=wf_overridden,
         retain_preregistered=retain_pre,
         retain_carried=retain_carried,
         n_trials_carried=n_trials_carried,
@@ -478,6 +557,12 @@ def format_holdout_report(report: HoldoutReport, record: DecisionRecord) -> str:
     # --- (b) Walk-forward stability over the hold-out. ---------------------
     s = report.stability
     lines.append("  (b) Walk-forward stability over the hold-out (spec 6.2)")
+    window_kind = "OVERRIDDEN (short)" if report.wf_windows_overridden else "config default"
+    lines.append(
+        f"        Window lengths (bars)    : train {report.wf_train_bars} "
+        f"/ test {report.wf_test_bars} / step {report.wf_step_bars} "
+        f"[{window_kind}]"
+    )
     if s is None:
         lines.append(
             "        Fewer than 2 complete walk-forward windows fit the hold-out;"

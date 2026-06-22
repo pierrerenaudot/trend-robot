@@ -7,6 +7,8 @@ Re-exports the public validation API (spec section 6):
 * :func:`purged_cv_splits`, :class:`PurgedKFold`, :class:`PurgedSplit`
   (purged CV + embargo, 6.3);
 * :class:`TrialCounter` (multiple-testing trials counter, 6.4);
+* :func:`whites_reality_check`, :func:`hansens_spa`,
+  :func:`stationary_bootstrap_indices` (advanced multiple-testing tests, 6.4);
 * :func:`cost_stress_test`, :func:`cost_stress_table`, :class:`CostStressRow`
   (cost sensitivity, section 5);
 * :func:`evaluate_final_validation`, :func:`format_final_report`,
@@ -31,6 +33,11 @@ from trend_robot.validation.holdout import (
     HoldoutReport,
     evaluate_holdout,
     format_holdout_report,
+)
+from trend_robot.validation.multiple_testing import (
+    hansens_spa,
+    stationary_bootstrap_indices,
+    whites_reality_check,
 )
 from trend_robot.validation.preregistration import (
     DecisionRecord,
@@ -77,10 +84,13 @@ __all__: list[str] = [
     "format_final_report",
     "format_holdout_report",
     "freeze_decision",
+    "hansens_spa",
     "load_decision",
     "purged_cv_splits",
+    "stationary_bootstrap_indices",
     "strategy_fingerprint",
     "train_test_split",
     "verify_config_matches",
     "walk_forward_splits",
+    "whites_reality_check",
 ]

@@ -127,6 +127,34 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--wf-train-months",
+        type=int,
+        default=None,
+        help=(
+            "Walk-forward TRAIN window in months for the hold-out stability "
+            "leg (default: unset = cfg.wf_train_years). Short windows make the "
+            "stability leg assessable on a short forward slice."
+        ),
+    )
+    parser.add_argument(
+        "--wf-test-months",
+        type=int,
+        default=None,
+        help=(
+            "Walk-forward TEST window in months for the hold-out stability leg "
+            "(default: unset = cfg.wf_test_years)."
+        ),
+    )
+    parser.add_argument(
+        "--wf-step-months",
+        type=int,
+        default=None,
+        help=(
+            "Walk-forward STEP in months for the hold-out stability leg "
+            "(default: unset = cfg.wf_step_years)."
+        ),
+    )
+    parser.add_argument(
         "--live",
         action="store_true",
         help=(
@@ -195,6 +223,9 @@ def main(argv: list[str] | None = None) -> int:
         mode=args.mode,
         retrospective_months=args.retrospective_months,
         min_bars=args.min_bars,
+        wf_train_months=args.wf_train_months,
+        wf_test_months=args.wf_test_months,
+        wf_step_months=args.wf_step_months,
     )
     print(format_holdout_report(report, record))
     return 0

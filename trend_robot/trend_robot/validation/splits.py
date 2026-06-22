@@ -149,6 +149,10 @@ def _years_to_bars(years: int, periods_per_year: int) -> int:
 def walk_forward_splits(
     index_or_df: pd.Index | pd.Series | pd.DataFrame,
     cfg: Config,
+    *,
+    train_bars: int | None = None,
+    test_bars: int | None = None,
+    step_bars: int | None = None,
 ) -> list[WalkForwardWindow]:
     """Generate rolling walk-forward train/test windows (spec 6.2).
 
@@ -164,6 +168,15 @@ def walk_forward_splits(
     than ``test`` bars) at the end of the history is dropped, so every returned
     window has full train/test lengths.
 
+    The window lengths may be overridden **explicitly in bars** via the keyword
+    arguments ``train_bars`` / ``test_bars`` / ``step_bars``. Each override that
+    is not ``None`` replaces the corresponding ``cfg.wf_*_years *
+    periods_per_year`` length; overrides left as ``None`` keep the config-derived
+    length. With all three ``None`` (the default) the behaviour is exactly the
+    config-driven one above, so existing callers are unaffected. This lets a
+    short forward / hold-out slice be rolled with short windows (e.g. 6-month
+    train / 3-month test) without changing the locked-test ``cfg`` defaults.
+
     Parameters
     ----------
     index_or_df:
@@ -172,6 +185,10 @@ def walk_forward_splits(
     cfg:
         Typed configuration providing ``wf_train_years`` / ``wf_test_years`` /
         ``wf_step_years`` and ``periods_per_year``.
+    train_bars, test_bars, step_bars:
+        Optional explicit window lengths in **bars**. When provided (not
+        ``None``) they override the config-derived length for that window;
+        otherwise the ``cfg.wf_*_years * periods_per_year`` length is used.
 
     Returns
     -------
@@ -182,9 +199,21 @@ def walk_forward_splits(
     index = _as_index(index_or_df)
     n = len(index)
 
-    train = _years_to_bars(cfg.wf_train_years, cfg.periods_per_year)
-    test = _years_to_bars(cfg.wf_test_years, cfg.periods_per_year)
-    step = _years_to_bars(cfg.wf_step_years, cfg.periods_per_year)
+    train = (
+        int(train_bars)
+        if train_bars is not None
+        else _years_to_bars(cfg.wf_train_years, cfg.periods_per_year)
+    )
+    test = (
+        int(test_bars)
+        if test_bars is not None
+        else _years_to_bars(cfg.wf_test_years, cfg.periods_per_year)
+    )
+    step = (
+        int(step_bars)
+        if step_bars is not None
+        else _years_to_bars(cfg.wf_step_years, cfg.periods_per_year)
+    )
     step = max(step, 1)  # never stall
 
     windows: list[WalkForwardWindow] = []

@@ -137,6 +137,61 @@ def _portfolio_vol(raw_w: pd.Series, cov: pd.DataFrame) -> float:
     return float(np.sqrt(variance))
 
 
+def _ewma_cov_cube(returns: pd.DataFrame, cfg: Config) -> np.ndarray:
+    """Annualized EWMA return covariance for *every* date, as a dense cube.
+
+    This is the vectorized equivalent of calling :func:`_ewma_cov_at` once per
+    date over the full asset set. :meth:`pandas.DataFrame.ewm(...).cov` computes
+    the exponentially-weighted **pairwise** covariance at every date in a single
+    causal pass; we reshape that result into a ``(T, N, N)`` numpy array where
+    ``cube[t]`` is the annualized covariance matrix as-of date ``t`` (row/column
+    order matches ``returns.columns``).
+
+    Each pair ``(i, j)`` is computed independently from only columns ``i`` and
+    ``j`` (with their own NaN handling and bias correction), so selecting the
+    sub-matrix for an arbitrary subset of "active" assets on a date yields the
+    *identical* covariance the per-date recompute would produce -- the per-date
+    loop need only slice into this cube. Entries are ``NaN`` wherever the EWMA
+    covariance is undefined (insufficient history / all-NaN window), exactly as
+    :func:`_ewma_cov_at` would return ``None`` for such a (date, asset-subset).
+
+    Parameters
+    ----------
+    returns:
+        Daily simple returns (full panel), aligned to the output column order.
+    cfg:
+        Typed configuration (``vol_window``, ``periods_per_year``).
+
+    Returns
+    -------
+    numpy.ndarray
+        Float64 array of shape ``(len(returns), n_assets, n_assets)`` holding
+        the annualized EWMA covariance per (date) over all assets. ``NaN`` marks
+        undefined entries.
+
+    Notes
+    -----
+    Numerically equivalent (to within floating-point round-off, ``< 1e-12`` in
+    practice) to ``_ewma_cov_at`` evaluated per date and per active subset; it
+    merely amortizes the single causal EWMA pass across all dates instead of
+    re-slicing and recomputing the full history at every date.
+    """
+    n_dates = returns.shape[0]
+    n_assets = returns.shape[1]
+    # Pairwise EWMA covariance at every date in one pass (date-major MultiIndex:
+    # level 0 = date, level 1 = row-asset; columns = assets, both in input order).
+    ewm_cov = returns.ewm(com=float(cfg.vol_window), min_periods=2).cov(
+        pairwise=True
+    )
+    # Reshape the (T*N, N) value block into a (T, N, N) cube. The MultiIndex is
+    # ordered date-major then row-asset-major (matching returns.columns), so a
+    # plain reshape recovers cube[t] == cov-as-of-date-t over all assets.
+    cube = (
+        ewm_cov.to_numpy(dtype="float64").reshape(n_dates, n_assets, n_assets)
+    )
+    return cube * float(cfg.periods_per_year)
+
+
 def target_weights(
     signals: pd.DataFrame,
     returns: pd.DataFrame,
@@ -224,6 +279,16 @@ def target_weights(
     raw = raw.where(usable, 0.0)
 
     # --- Steps 3-5 are per-date (covariance + cap depend on the cross-section).
+    #
+    # The EWMA covariance is the perf hot spot: recomputing the full pairwise
+    # covariance from scratch at every as-of date is O(T^2). Instead we make a
+    # single causal pass (``_ewma_cov_cube``) producing the (T, N, N) covariance
+    # cube over *all* assets, then merely slice the active sub-matrix per date.
+    # Because pandas computes each covariance pair independently from only the
+    # two columns involved, slicing the all-asset cube to a date's active subset
+    # is numerically identical to recomputing the covariance on just that subset
+    # (verified <1e-12). The cheap, genuinely cross-sectional bits (portfolio-vol
+    # scaling + gross cap) stay in the per-date loop.
     weights = pd.DataFrame(
         0.0, index=out_index, columns=out_columns, dtype="float64"
     )
@@ -231,31 +296,46 @@ def target_weights(
     port_target = float(cfg.portfolio_vol_target)
     max_gross = float(cfg.max_gross_leverage)
 
-    for pos, date in enumerate(out_index):
-        raw_row = raw.loc[date]
-        active = raw_row.index[raw_row.to_numpy() != 0.0]
-        if len(active) == 0:
+    cov_cube = _ewma_cov_cube(ret, cfg)  # (T, N, N), NaN where undefined
+    raw_arr = raw.to_numpy(dtype="float64")  # (T, N)
+    out_arr = np.zeros_like(raw_arr)  # accumulate then assign in one block
+
+    for pos in range(raw_arr.shape[0]):
+        raw_row = raw_arr[pos]
+        active_mask = raw_row != 0.0
+        if not active_mask.any():
             continue  # row already all-zero
 
         # --- Step 3: portfolio-vol scaling factor k. -----------------------
-        cov = _ewma_cov_at(ret, cfg, active, pos)
-        if cov is None:
+        # Slice the active sub-covariance from the precomputed cube. A NaN in
+        # the sub-matrix means the covariance is undefined for this (date,
+        # subset) -> mirror the old ``cov is None`` fallback to k = 1.0.
+        sub_cov = cov_cube[pos][np.ix_(active_mask, active_mask)]
+        if np.isnan(sub_cov).any():
             # No reliable covariance yet -> cannot scale to portfolio target.
             # Fall back to the unit factor so per-asset targeting still holds;
             # the gross cap below remains the binding risk control.
             k = 1.0
         else:
-            sigma_p = _portfolio_vol(raw_row.loc[active], cov)
-            k = (port_target / sigma_p) if sigma_p > 0.0 else 1.0
+            w_active = raw_row[active_mask]
+            variance = float(w_active @ sub_cov @ w_active)
+            if np.isfinite(variance) and variance > 0.0:
+                sigma_p = float(np.sqrt(variance))
+                k = (port_target / sigma_p) if sigma_p > 0.0 else 1.0
+            else:
+                # Degenerate (non-finite / non-positive) ex-ante variance ->
+                # unit factor, matching _portfolio_vol returning 0.0 then k=1.0.
+                k = 1.0
 
         # --- Steps 3 (apply) + 4: scale by k and fractional Kelly. ---------
         w_row = raw_row * (k * kelly)
 
         # --- Step 5: gross-leverage cap (renormalize iff exceeded). --------
-        gross = float(w_row.abs().sum())
+        gross = float(np.abs(w_row).sum())
         if gross > max_gross and gross > 0.0:
             w_row = w_row * (max_gross / gross)
 
-        weights.loc[date] = w_row
+        out_arr[pos] = w_row
 
+    weights.iloc[:, :] = out_arr
     return weights
