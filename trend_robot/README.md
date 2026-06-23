@@ -195,6 +195,28 @@ Garde-fous : `--dry-run` est le défaut et n'appelle jamais `submit_order` ; `--
 
 ---
 
+## Variantes en validation (pistes forward pré-enregistrées)
+
+Deux variantes sont gelées et accumulent leur jeu de test **forward pristine** (jugées dans ~1 an, on garde la meilleure — sans re-régler).
+
+| | **Variante PRIMAIRE** | **Variante BROAD** |
+|---|---|---|
+| **Fichiers** | `config.yaml` + `decision_record.json` | `config_broad.yaml` + `decision_record_broad.json` |
+| **Univers** | 7 : SPY, EFA, EEM, TLT, IEF, GLD, DBC | 14 : les 7 + IWM, VGK, LQD, HYG, USO, VNQ, UUP |
+| **Stratégie** | TSMOM `long_only` · `monthly` | TSMOM `long_only` · `monthly` (identique) |
+| **Date de décision (gel)** | 2026-06-19 | 2026-06-22 |
+| **Hash config** | `8694cdcb…` | `65791290…` |
+| **n_trials (honnête)** | 6 | 7 |
+| **Paper-tradée sur Alpaca ?** | ✅ oui (GitHub Actions, 1 trade/mois) | ❌ non — jugée sur **prix uniquement** |
+| **Comment la juger** | `python run_holdout.py --live` | `python run_holdout.py --config config_broad.yaml --decision decision_record_broad.json --live` |
+| **Premier verdict pristine** | ~1 an (≈ juin 2027) | ~1 an (≈ juin 2027) |
+
+- La **primaire** est la piste *active* (passe des ordres paper chaque mois via GitHub Actions — cf. [ALPACA_SETUP.md](ALPACA_SETUP.md)).
+- La **broad** est *passive* : aucun trade requis, son verdict se calcule à la demande sur l'historique de prix accumulé (teste l'hypothèse « plus de largeur = plus robuste »).
+- Les `decision_record*.json` sont des **pré-enregistrements figés** (écrits une fois au gel) ; rien ne les modifie ensuite.
+
+---
+
 ## Licence
 
 À définir par le propriétaire du dépôt. Fourni « tel quel », sans aucune garantie ; usage de recherche uniquement.
