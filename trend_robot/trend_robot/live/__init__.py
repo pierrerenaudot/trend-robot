@@ -29,7 +29,13 @@ from trend_robot.live.broker import (
     OrderResult,
     Position,
 )
+from trend_robot.live.alerts import send_alert
 from trend_robot.live.executor import plan_orders, summarize_plan
+from trend_robot.live.reconcile import (
+    ReconcileReport,
+    format_reconcile_report,
+    reconcile_book,
+)
 from trend_robot.live.live_data import last_prices, prices_asof
 from trend_robot.live.state import has_run_for, load_last_state, save_run_state
 from trend_robot.live.target import compute_target_book
@@ -47,6 +53,10 @@ __all__ = [
     "compute_target_book",
     "plan_orders",
     "summarize_plan",
+    "reconcile_book",
+    "format_reconcile_report",
+    "ReconcileReport",
+    "send_alert",
     "save_run_state",
     "load_last_state",
     "has_run_for",

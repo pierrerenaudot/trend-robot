@@ -21,6 +21,10 @@ on:
         description: "Dry-run (preview only, NO orders sent). Uncheck to submit to Alpaca paper."
         type: boolean
         default: true
+      force:
+        description: "Override the once-per-period guard (repair after a reconciliation anomaly). Live submits only."
+        type: boolean
+        default: false
 
 # Scheduled workflows only run on the default branch (main).
 permissions:
@@ -69,15 +73,24 @@ jobs:
         env:
           APCA_API_KEY_ID: ${{ secrets.APCA_API_KEY_ID }}
           APCA_API_SECRET_KEY: ${{ secrets.APCA_API_SECRET_KEY }}
+          # Optional second alert channel (Slack/Discord/healthchecks/ntfy
+          # webhook). Unset => the red run + GitHub e-mail remain the alert.
+          ALERT_WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
           DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run || 'false' }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force || 'false' }}
         run: |
           set -euo pipefail
           if [ "$DRY_RUN" = "true" ]; then
             echo "::notice::Dry-run preview (no orders will be sent)."
             python run_live.py --dry-run --live --log-level INFO
           else
+            EXTRA=""
+            if [ "$FORCE" = "true" ]; then
+              echo "::warning::--force requested: overriding the once-per-period guard (repair run)."
+              EXTRA="--force"
+            fi
             echo "::notice::LIVE paper submit (Alpaca paper; idempotent: 1 trade/month)."
-            python run_live.py --no-dry-run --broker alpaca --live --log-level INFO
+            python run_live.py --no-dry-run --broker alpaca --live --log-level INFO $EXTRA
           fi
 
       # --- Persist state AFTER the run (even if a later step fails). ----------

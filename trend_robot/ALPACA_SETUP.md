@@ -249,6 +249,30 @@ inconclusive** — that is the honest state of a young hold-out, not a failure.
 * **Drift-protected.** A live submit is refused if the running config no longer
   matches the frozen pre-registered strategy, protecting the pristine forward
   read from accidentally trading a different variant.
+* **Data-integrity gate.** A live submit is refused when the price data is
+  synthetic (Yahoo failed/rate-limited) or stale (last bar older than
+  `--max-stale-days`, default 7). The daily schedule is the retry loop —
+  skipping a day costs nothing; trading a random walk would poison the
+  forward track.
+* **Reconciliation + alert.** On a run that *skips* (period already traded),
+  the broker book is compared to the target book. If the positions are gone or
+  materially off-target (L1 gap > `--reconcile-tolerance`, default 0.25) — an
+  account reset, silently rejected fills, manual liquidation — the run prints
+  the reconciliation table, fires the alert channels, and **exits non-zero**
+  (the scheduled run turns red and GitHub e-mails you). Repair: check the
+  account, then re-run with **force** (workflow_dispatch has a `force`
+  checkbox; locally `--force`).
+
+## 9b. Alerting channels
+
+1. **Red run + GitHub e-mail (always on).** Any fatal guard (data gate, config
+   drift, reconciliation anomaly) exits non-zero → the scheduled run fails →
+   GitHub notifies you by e-mail. Nothing to configure.
+2. **Webhook (optional).** Add a repository secret `ALERT_WEBHOOK_URL`
+   pointing at a Slack / Discord / Mattermost / ntfy / healthchecks webhook.
+   The payload carries the message under both `text` (Slack-style) and
+   `content` (Discord-style), so most webhooks work unconfigured. Unset =
+   silently disabled.
 
 ---
 

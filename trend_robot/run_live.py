@@ -51,11 +51,13 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import sys
 from pathlib import Path
 
 import pandas as pd
 
 from trend_robot.config import Config, load_config, set_global_seed
+from trend_robot.live.alerts import send_alert
 from trend_robot.live.broker import (
     AlpacaBroker,
     Broker,
@@ -66,6 +68,7 @@ from trend_robot.live.broker import (
 )
 from trend_robot.live.executor import plan_orders, summarize_plan
 from trend_robot.live.live_data import last_prices, prices_asof
+from trend_robot.live.reconcile import format_reconcile_report, reconcile_book
 from trend_robot.live.scheduling import period_key
 from trend_robot.live.state import load_last_state, save_run_state
 from trend_robot.live.target import compute_target_book
@@ -307,6 +310,75 @@ def _check_config_drift(
     _LOGGER.warning("%s (dry-run: warning only, not blocking).", message)
 
 
+def _check_data_integrity(
+    prices: pd.DataFrame,
+    data_source: str,
+    asof: str,
+    *,
+    live_submit: bool,
+    max_stale_days: int,
+    allow_synthetic_live: bool,
+) -> None:
+    """Refuse to trade real (paper) orders on synthetic or stale prices.
+
+    The research pipeline deliberately falls back to the seeded
+    :class:`SyntheticProvider` when Yahoo is unusable (HTTP 429) so offline
+    runs keep working. That fallback must NEVER reach a live submission: a
+    rate-limited first-of-month run would otherwise trade a random walk into
+    the pre-registered forward track with a green checkmark. The daily
+    scheduled job is the natural retry loop -- skipping today costs nothing.
+
+    Checks (fatal on a live submit, warning on a dry-run):
+
+    * ``data_source`` must be ``"yfinance"`` (real market data), unless
+      ``allow_synthetic_live`` explicitly opts out (tests/simulation only);
+    * the panel's last bar must be recent relative to ``asof`` (at most
+      ``max_stale_days`` calendar days old -- generous enough for weekends and
+      holiday bridges, tight enough to catch a dead cache).
+
+    Raises
+    ------
+    RuntimeError
+        On a live submit with synthetic/stale data (after firing an alert).
+    """
+    problems: list[str] = []
+
+    if data_source != "yfinance" and not allow_synthetic_live:
+        problems.append(
+            f"data source is '{data_source}' (not real market data); a "
+            "Yahoo failure must skip the run, not trade a synthetic random walk"
+        )
+
+    if len(prices.index) == 0:
+        problems.append("price panel is empty")
+    else:
+        last_bar = pd.Timestamp(prices.index[-1])
+        age_days = (pd.Timestamp(asof) - last_bar).days
+        if age_days > int(max_stale_days):
+            problems.append(
+                f"last price bar {last_bar.date()} is {age_days} calendar "
+                f"days old vs asof {asof} (max {max_stale_days}); the panel "
+                "is stale"
+            )
+
+    if not problems:
+        return
+
+    message = (
+        "DATA-INTEGRITY GATE: " + "; ".join(problems) + "."
+    )
+    if live_submit:
+        send_alert(
+            f"[TSMOM] LIVE SUBMIT REFUSED -- {message} The scheduled job will "
+            "retry on the next run."
+        )
+        raise RuntimeError(
+            message + " Refusing the live submit; the daily schedule will "
+            "retry with fresh data."
+        )
+    _LOGGER.warning("%s (dry-run: warning only, not blocking).", message)
+
+
 def _last_submitted_period(state_dir: str) -> str | None:
     """Return the period key of the last successful live submission, if any.
 
@@ -424,6 +496,15 @@ def main(argv: list[str] | None = None) -> dict:
                         help="Allow fractional-share orders (default: whole shares).")
     parser.add_argument("--history-years", type=int, default=_DEFAULT_HISTORY_YEARS,
                         help=f"Years of price history (default: {_DEFAULT_HISTORY_YEARS}).")
+    parser.add_argument("--reconcile-tolerance", type=float, default=0.25,
+                        help="L1 weight-gap tolerance before the broker book is "
+                             "flagged materially off-target (default: 0.25).")
+    parser.add_argument("--max-stale-days", type=int, default=7,
+                        help="Max calendar-day age of the last price bar vs asof "
+                             "before the data is considered stale (default: 7).")
+    parser.add_argument("--allow-synthetic-live", action="store_true",
+                        help="TESTS/SIMULATION ONLY: bypass the data-integrity "
+                             "gate that refuses live submits on synthetic data.")
     parser.add_argument("--log-level", default="INFO", help="Logging level.")
     args = parser.parse_args(argv)
 
@@ -476,6 +557,15 @@ def main(argv: list[str] | None = None) -> dict:
     target_w = compute_target_book(cfg, prices, asof=asof)
     last_px = last_prices(prices)
 
+    # --- Data-integrity gate. NEVER trade real (paper) orders on synthetic or
+    #     stale prices; a dry-run only warns. (The daily schedule retries.)
+    _check_data_integrity(
+        prices, data_source, asof,
+        live_submit=not args.dry_run,
+        max_stale_days=args.max_stale_days,
+        allow_synthetic_live=args.allow_synthetic_live,
+    )
+
     # --- Config-drift guard. On a LIVE submit, REFUSE if the running config
     #     drifted from the frozen pre-registered variant; a dry-run only warns.
     _check_config_drift(cfg, args.decision, live_submit=not args.dry_run)
@@ -501,6 +591,17 @@ def main(argv: list[str] | None = None) -> dict:
     )
     summary = summarize_plan(intents, target_w, cfg)
 
+    # --- Reconciliation: is the broker book where the strategy expects it? -
+    # A gap is EXPECTED right before a rebalance; it is an ANOMALY on a run
+    # that skips because the period was already traded (the book should then
+    # sit near target -- a large gap means the fills are gone: account reset,
+    # silent rejection, manual liquidation). July-2026 incident, systematized.
+    reconcile = reconcile_book(
+        target_w, positions, last_px, account.equity,
+        tolerance=args.reconcile_tolerance,
+    )
+    reconcile_escalated = False
+
     # --- SAFETY: only submit on an explicit live run. ----------------------
     submitted = 0
     submitted_period: str | None = last_period  # carry forward prior marker
@@ -518,6 +619,26 @@ def main(argv: list[str] | None = None) -> dict:
             _LOGGER.warning(
                 "SKIP live submit: %s. Run state still recorded.", skipped_reason,
             )
+            if reconcile.anomaly:
+                # Period marked traded but the book is NOT near target: the
+                # earlier submission's positions are gone. Alert loudly and
+                # fail the run (red CI -> GitHub e-mail) so a human decides
+                # (typically: re-run with --force after checking the account).
+                reconcile_escalated = True
+                report_text = format_reconcile_report(reconcile)
+                _LOGGER.error(
+                    "RECONCILIATION ANOMALY on a skipped run:\n%s", report_text,
+                )
+                print(report_text)
+                send_alert(
+                    "[TSMOM] RECONCILIATION ANOMALY -- period "
+                    f"'{this_period}' is marked submitted but the broker book "
+                    f"is off-target (L1 gap {reconcile.l1_deviation:.3f}, "
+                    f"gross {reconcile.current_gross:.3f} vs target "
+                    f"{reconcile.target_gross:.3f}). Check the account "
+                    "(reset? rejected fills?) and re-run with --force to "
+                    "repair."
+                )
         else:
             # Market-open check (warn only; DAY orders queue for next session).
             try:
@@ -578,6 +699,21 @@ def main(argv: list[str] | None = None) -> dict:
         ],
         "summary": summary,
         "submitted": submitted,
+        "reconcile": {
+            "l1_deviation": reconcile.l1_deviation,
+            "max_deviation": reconcile.max_deviation,
+            "current_gross": reconcile.current_gross,
+            "target_gross": reconcile.target_gross,
+            "tolerance": reconcile.tolerance,
+            "book_flat_but_target_invested":
+                reconcile.book_flat_but_target_invested,
+            "materially_off_target": reconcile.materially_off_target,
+            "anomaly": reconcile.anomaly,
+            "escalated": reconcile_escalated,
+        },
+        # Non-zero when a human must look (reconciliation anomaly on a run
+        # that skipped): the CLI exits with this, turning the CI run red.
+        "exit_code": 2 if reconcile_escalated else 0,
     }
     state_path = save_run_state(args.state_dir, record)
     _LOGGER.info("Wrote run state to %s", state_path)
@@ -586,4 +722,6 @@ def main(argv: list[str] | None = None) -> dict:
 
 
 if __name__ == "__main__":
-    main()
+    # Exit non-zero on an escalated reconciliation anomaly so the scheduled CI
+    # run turns red and GitHub e-mails the owner (the primary alert channel).
+    sys.exit(int(main().get("exit_code", 0)))

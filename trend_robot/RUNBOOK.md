@@ -200,6 +200,8 @@ Avant de considérer une variante comme « validée » :
 | `run_holdout` dit « insufficient » | Normal tant que < 252 barres forward. Laisser le paper-trading accumuler. |
 | `AlpacaBroker requires API credentials` | Variables `APCA_API_KEY_ID` / `APCA_API_SECRET_KEY` non définies (voir ALPACA_SETUP.md). |
 | Soumission live refusée « CONFIG DRIFT » | `config.yaml` ne correspond plus au `decision_record.json` gelé. Re-geler la décision ou restaurer la config. |
+| Soumission live refusée « DATA-INTEGRITY GATE » | Données synthétiques (Yahoo en panne/429) ou périmées : le robot refuse de trader dessus. Rien à faire — le job quotidien réessaiera avec des données fraîches. |
+| Run GitHub **rouge** « RECONCILIATION ANOMALY » | La période est marquée tradée mais le book broker est à plat/décalé (reset du compte, fills rejetés, liquidation manuelle). Vérifier le compte Alpaca, puis relancer le workflow avec la case **force** cochée (ou `--force` en local) pour réparer. |
 
 ---
 

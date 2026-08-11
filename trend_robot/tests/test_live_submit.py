@@ -250,6 +250,9 @@ def _live_argv(state_dir: Path, *, asof: str, force: bool = False) -> list[str]:
         "--cache-dir", str(state_dir / "cache"),
         "--decision", str(_DECISION_RECORD),
         "--history-years", "6",
+        # Tests run on the deterministic synthetic provider; explicitly bypass
+        # the data-integrity gate that (correctly) refuses synthetic live data.
+        "--allow-synthetic-live",
         "--log-level", "WARNING",
     ]
     if force:
@@ -379,6 +382,7 @@ def test_config_drift_refuses_live_submit(tmp_path, monkeypatch) -> None:
         "--cache-dir", str(state_dir / "cache"),
         "--decision", str(_DECISION_RECORD),
         "--history-years", "6",
+        "--allow-synthetic-live",  # isolate the DRIFT guard from the data gate
         "--log-level", "WARNING",
     ]
     with pytest.raises(RuntimeError, match="CONFIG DRIFT"):
