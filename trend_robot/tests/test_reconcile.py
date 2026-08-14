@@ -35,6 +35,8 @@ from trend_robot.live.reconcile import (
     format_reconcile_report,
     reconcile_book,
 )
+from trend_robot.live.scheduling import period_key
+from trend_robot.live.state import save_run_state
 
 _PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -196,6 +198,8 @@ def test_skip_run_with_vanished_book_escalates(tmp_path, monkeypatch) -> None:
     assert second["reconcile"]["anomaly"] is True
     assert second["reconcile"]["book_flat_but_target_invested"] is True
     assert second["reconcile"]["escalated"] is True
+    # The comparison ran against the SUBMITTED targets carried in state.
+    assert second["reconcile_reference"] == "submitted_targets"
     assert second["exit_code"] == 2
     assert len(alerted) == 1 and "RECONCILIATION ANOMALY" in alerted[0]
 
@@ -228,6 +232,100 @@ def test_skip_run_with_book_near_target_stays_green(tmp_path, monkeypatch) -> No
     # Drift between the 15th and 28th stays well under the 0.25 tolerance.
     assert second["reconcile"]["escalated"] is False
     assert second["exit_code"] == 0
+    assert alerted == []
+
+
+def test_mid_month_signal_drift_not_escalated(tmp_path, monkeypatch) -> None:
+    """Aug-2026 false-positive replay: the SIGNAL moves mid-month while the
+    book sits exactly where the rebalance put it -- must stay green.
+
+    Reconciliation must compare the book to the SUBMITTED targets carried in
+    state, not to today's freshly-computed target."""
+    state_dir = tmp_path / "state"
+    mock = MockTradingClient(equity=100_000.0, is_open=True)
+    _patch_alpaca_broker(monkeypatch, mock)
+
+    alerted: list[str] = []
+    monkeypatch.setattr(run_live, "send_alert", lambda msg, **kw: alerted.append(msg) or True)
+
+    first = run_live.main(_live_argv(state_dir, asof="2021-06-15"))
+    assert first["submitted"] > 0
+
+    # Book = exactly the submitted targets (at each order's est_price).
+    weights = first["target_weights"]
+    est_px = {o["symbol"]: o["est_price"] for o in first["orders"]}
+    mock._positions = {
+        sym: (w * 100_000.0) / est_px[sym]
+        for sym, w in weights.items()
+        if abs(w) > 1e-9 and sym in est_px
+    }
+
+    # Mid-month the signal shifts violently: today's target is nothing like
+    # the submitted one (assets flipped on, vol scaling moved).
+    drifted_target = pd.Series({"GLD": 0.90})
+    monkeypatch.setattr(
+        run_live, "compute_target_book",
+        lambda cfg, prices, asof=None: drifted_target,
+    )
+
+    second = run_live.main(_live_argv(state_dir, asof="2021-06-28"))
+    assert second["submitted"] == 0
+    assert second["reconcile_reference"] == "submitted_targets"
+    assert second["reconcile"]["escalated"] is False
+    assert second["exit_code"] == 0
+    assert alerted == []
+
+
+def test_legacy_state_flat_book_still_escalates(tmp_path, monkeypatch) -> None:
+    """Pre-feature state (no submitted_target_weights): the unambiguous
+    flat-book-vs-invested signature still escalates via the fallback."""
+    state_dir = tmp_path / "state"
+    mock = MockTradingClient(equity=100_000.0, is_open=True)  # flat book
+    _patch_alpaca_broker(monkeypatch, mock)
+
+    alerted: list[str] = []
+    monkeypatch.setattr(run_live, "send_alert", lambda msg, **kw: alerted.append(msg) or True)
+
+    # Hand-write a legacy marker: period submitted, but NO submitted targets.
+    save_run_state(state_dir, {
+        "asof": "2021-06-15",
+        "submitted_period": period_key("2021-06-15", "monthly"),
+    })
+
+    record = run_live.main(_live_argv(state_dir, asof="2021-06-28"))
+    assert record["submitted"] == 0
+    assert record["reconcile_reference"] == "today_targets"  # fallback
+    assert record["reconcile"]["book_flat_but_target_invested"] is True
+    assert record["reconcile"]["escalated"] is True
+    assert record["exit_code"] == 2
+    assert len(alerted) == 1
+
+
+def test_legacy_state_nonflat_drift_not_escalated(tmp_path, monkeypatch) -> None:
+    """Pre-feature state + a NON-flat book off today's target: lenient
+    fallback does NOT escalate (signal drift is indistinguishable there)."""
+    state_dir = tmp_path / "state"
+    mock = MockTradingClient(
+        equity=100_000.0,
+        positions={"SPY": 100.0},  # non-flat, but nowhere near today's target
+        is_open=True,
+    )
+    _patch_alpaca_broker(monkeypatch, mock)
+
+    alerted: list[str] = []
+    monkeypatch.setattr(run_live, "send_alert", lambda msg, **kw: alerted.append(msg) or True)
+
+    save_run_state(state_dir, {
+        "asof": "2021-06-15",
+        "submitted_period": period_key("2021-06-15", "monthly"),
+    })
+
+    record = run_live.main(_live_argv(state_dir, asof="2021-06-28"))
+    assert record["submitted"] == 0
+    assert record["reconcile_reference"] == "today_targets"
+    assert record["reconcile"]["book_flat_but_target_invested"] is False
+    assert record["reconcile"]["escalated"] is False
+    assert record["exit_code"] == 0
     assert alerted == []
 
 

@@ -379,12 +379,17 @@ def _check_data_integrity(
     _LOGGER.warning("%s (dry-run: warning only, not blocking).", message)
 
 
-def _last_submitted_period(state_dir: str) -> str | None:
-    """Return the period key of the last successful live submission, if any.
+def _last_submission(state_dir: str) -> tuple[str | None, dict[str, float] | None]:
+    """Return the last live submission's period marker and submitted targets.
 
-    Scans the most recent persisted run record for a ``submitted_period``
-    marker written by a prior LIVE submit. Used to enforce one-trade-per-period
-    idempotence across separate scheduled invocations.
+    Scans the most recent persisted run record for the ``submitted_period``
+    marker (one-trade-per-period idempotence) and the
+    ``submitted_target_weights`` actually sent at that rebalance. The latter is
+    the correct RECONCILIATION reference on a skipped run: between two monthly
+    rebalances the *signal* legitimately drifts (assets switch on/off, vol
+    scaling moves), so comparing the held book to TODAY's freshly-computed
+    target produces false anomalies; the book should instead sit near the
+    targets it was actually rebalanced to.
 
     Parameters
     ----------
@@ -393,15 +398,21 @@ def _last_submitted_period(state_dir: str) -> str | None:
 
     Returns
     -------
-    str | None
-        The recorded ``submitted_period``, or ``None`` when no live submission
-        has been recorded yet.
+    tuple[str | None, dict[str, float] | None]
+        ``(submitted_period, submitted_target_weights)``; each ``None`` when
+        no live submission has been recorded yet (or the state predates the
+        weights field).
     """
     last = load_last_state(state_dir)
     if not last:
-        return None
+        return None, None
     marker = last.get("submitted_period")
-    return str(marker) if marker else None
+    weights = last.get("submitted_target_weights")
+    if isinstance(weights, dict) and weights:
+        weights = {str(k): float(v) for k, v in weights.items()}
+    else:
+        weights = None
+    return (str(marker) if marker else None), weights
 
 
 def _print_status(broker: Broker, *, broker_name: str) -> None:
@@ -572,7 +583,7 @@ def main(argv: list[str] | None = None) -> dict:
 
     # --- Cadence + idempotence: at most one LIVE submit per rebalance period.
     this_period = period_key(asof, cfg.rebalance)
-    last_period = _last_submitted_period(args.state_dir)
+    last_period, carried_targets = _last_submission(args.state_dir)
     already_submitted_period = (last_period == this_period)
 
     # --- Broker: account + current positions. ------------------------------
@@ -594,10 +605,28 @@ def main(argv: list[str] | None = None) -> dict:
     # --- Reconciliation: is the broker book where the strategy expects it? -
     # A gap is EXPECTED right before a rebalance; it is an ANOMALY on a run
     # that skips because the period was already traded (the book should then
-    # sit near target -- a large gap means the fills are gone: account reset,
-    # silent rejection, manual liquidation). July-2026 incident, systematized.
+    # sit near where that rebalance PUT it -- a large gap means the fills are
+    # gone: account reset, silent rejection, manual liquidation). July-2026
+    # incident, systematized.
+    #
+    # Reference choice matters: on a skipped run the book is compared to the
+    # SUBMITTED targets carried in state, NOT to today's freshly-computed
+    # target -- the signal legitimately drifts between monthly rebalances
+    # (Aug-2026 false positive: held gross 0.74 == the Aug-3 submission, but
+    # the mid-month signal wanted 1.10). Today's target is only used as a
+    # lenient fallback for pre-feature state files, where solely the
+    # unambiguous flat-book-vs-invested signature escalates.
+    skip_path = (
+        (not args.dry_run) and already_submitted_period and not args.force
+    )
+    if skip_path and carried_targets is not None:
+        reconcile_ref = pd.Series(carried_targets, dtype="float64")
+        reconcile_reference = "submitted_targets"
+    else:
+        reconcile_ref = target_w
+        reconcile_reference = "today_targets"
     reconcile = reconcile_book(
-        target_w, positions, last_px, account.equity,
+        reconcile_ref, positions, last_px, account.equity,
         tolerance=args.reconcile_tolerance,
     )
     reconcile_escalated = False
@@ -619,9 +648,13 @@ def main(argv: list[str] | None = None) -> dict:
             _LOGGER.warning(
                 "SKIP live submit: %s. Run state still recorded.", skipped_reason,
             )
-            if reconcile.anomaly:
-                # Period marked traded but the book is NOT near target: the
-                # earlier submission's positions are gone. Alert loudly and
+            escalate = reconcile.anomaly and (
+                reconcile_reference == "submitted_targets"
+                or reconcile.book_flat_but_target_invested
+            )
+            if escalate:
+                # Period marked traded but the book is NOT near what that
+                # submission established: the fills are gone. Alert loudly and
                 # fail the run (red CI -> GitHub e-mail) so a human decides
                 # (typically: re-run with --force after checking the account).
                 reconcile_escalated = True
@@ -655,6 +688,9 @@ def main(argv: list[str] | None = None) -> dict:
                 order_results.append(broker.submit_order(intent))
                 submitted += 1
             submitted_period = this_period
+            # The targets actually sent become the reconciliation reference
+            # for the rest of the period (see _last_submission).
+            carried_targets = {k: float(v) for k, v in target_w.items()}
             _LOGGER.info(
                 "Submitted %d live orders via %s for period %s.",
                 submitted, args.broker, this_period,
@@ -699,6 +735,11 @@ def main(argv: list[str] | None = None) -> dict:
         ],
         "summary": summary,
         "submitted": submitted,
+        # Reconciliation reference for skipped runs later in the period: the
+        # targets actually submitted at this period's rebalance (carried
+        # forward across daily runs, refreshed on each real submission).
+        "submitted_target_weights": carried_targets,
+        "reconcile_reference": reconcile_reference,
         "reconcile": {
             "l1_deviation": reconcile.l1_deviation,
             "max_deviation": reconcile.max_deviation,
